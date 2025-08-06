@@ -32,10 +32,19 @@ class MonitorWidget(QWidget):
         self._is_dragging = False
         self._drag_pos = None
 
+        # 右键菜单
+        self.context_menu = QMenu(self)
+        quit_action = QAction("退出软件", self)
+        quit_action.triggered.connect(QApplication.instance().quit)
+        self.context_menu.addAction(quit_action)
+
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
             self._is_dragging = True
             self._drag_pos = event.globalPos() - self.frameGeometry().topLeft()
+            event.accept()
+        elif event.button() == Qt.RightButton:
+            self.context_menu.exec_(event.globalPos())
             event.accept()
 
     def mouseMoveEvent(self, event):
