@@ -1,11 +1,56 @@
 import sys
 import psutil
 import time
+import os
+from datetime import datetime
 from PyQt5.QtWidgets import (QApplication, QWidget, QLabel, QVBoxLayout,
                              QSystemTrayIcon, QMenu, QAction, QMessageBox,
-                             QInputDialog, QDialog)
+                             QInputDialog, QDialog, QFileDialog)
 from PyQt5.QtCore import QTimer, Qt, QPropertyAnimation, QPoint
-from PyQt5.QtGui import QIcon, QPixmap, QPainter, QColor, QFont
+from PyQt5.QtGui import QIcon, QPixmap, QPainter, QColor, QFont, QScreen
+from PyQt5.QtWidgets import QApplication
+from PyQt5.QtCore import QThread, pyqtSignal
+import keyboard
+import pyperclip
+from PIL import ImageGrab
+import io
+
+
+class ScreenshotThread(QThread):
+    screenshot_taken = pyqtSignal(object)  # 发送截图数据
+    
+    def __init__(self):
+        super().__init__()
+        self.is_running = True
+        
+    def run(self):
+        # 监听快捷键
+        keyboard.add_hotkey('ctrl+shift+s', self.take_screenshot)
+        keyboard.wait()
+        
+    def take_screenshot(self):
+        try:
+            # 使用PIL截图
+            screenshot = ImageGrab.grab()
+            
+            # 转换为QPixmap
+            buffer = io.BytesIO()
+            screenshot.save(buffer, format='PNG')
+            buffer.seek(0)
+            
+            pixmap = QPixmap()
+            pixmap.loadFromData(buffer.getvalue())
+            
+            # 发送信号
+            self.screenshot_taken.emit(pixmap)
+            
+        except Exception as e:
+            print(f"截图失败: {e}")
+    
+    def stop(self):
+        self.is_running = False
+        keyboard.unhook_all()
+        self.quit()
 
 
 class ReminderDialog(QDialog):
@@ -54,6 +99,109 @@ class ReminderDialog(QDialog):
     def accept(self, event=None):
         self.close()
         super().accept()
+
+
+class ScreenshotResultDialog(QDialog):
+    def __init__(self, pixmap, parent=None):
+        super().__init__(parent)
+        self.pixmap = pixmap
+        self.setWindowTitle("截图结果")
+        self.setWindowFlags(Qt.WindowStaysOnTopHint | Qt.Dialog)
+        self.setFixedSize(400, 300)
+        
+        layout = QVBoxLayout()
+        
+        # 显示截图预览
+        self.image_label = QLabel()
+        scaled_pixmap = pixmap.scaled(380, 200, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        self.image_label.setPixmap(scaled_pixmap)
+        self.image_label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(self.image_label)
+        
+        # 按钮布局
+        button_layout = QVBoxLayout()
+        
+        # 复制到剪贴板按钮
+        copy_button = QLabel("复制到剪贴板")
+        copy_button.setStyleSheet("""
+            background: rgba(70, 130, 180, 200); 
+            color: white; 
+            font-size: 14px; 
+            padding: 8px; 
+            border-radius: 5px;
+            margin: 5px;
+        """)
+        copy_button.setAlignment(Qt.AlignCenter)
+        copy_button.mousePressEvent = self.copy_to_clipboard
+        
+        # 保存到本地按钮
+        save_button = QLabel("保存到本地")
+        save_button.setStyleSheet("""
+            background: rgba(70, 130, 180, 200); 
+            color: white; 
+            font-size: 14px; 
+            padding: 8px; 
+            border-radius: 5px;
+            margin: 5px;
+        """)
+        save_button.setAlignment(Qt.AlignCenter)
+        save_button.mousePressEvent = self.save_to_local
+        
+        # 关闭按钮
+        close_button = QLabel("关闭")
+        close_button.setStyleSheet("""
+            background: rgba(150, 150, 150, 200); 
+            color: white; 
+            font-size: 14px; 
+            padding: 8px; 
+            border-radius: 5px;
+            margin: 5px;
+        """)
+        close_button.setAlignment(Qt.AlignCenter)
+        close_button.mousePressEvent = self.close
+        
+        button_layout.addWidget(copy_button)
+        button_layout.addWidget(save_button)
+        button_layout.addWidget(close_button)
+        
+        layout.addLayout(button_layout)
+        self.setLayout(layout)
+    
+    def copy_to_clipboard(self, event=None):
+        try:
+            # 将QPixmap转换为PIL Image
+            buffer = io.BytesIO()
+            self.pixmap.save(buffer, "PNG")
+            buffer.seek(0)
+            
+            # 复制到剪贴板
+            clipboard = QApplication.clipboard()
+            clipboard.setPixmap(self.pixmap)
+            
+            QMessageBox.information(self, "成功", "截图已复制到剪贴板！")
+        except Exception as e:
+            QMessageBox.warning(self, "错误", f"复制失败: {e}")
+    
+    def save_to_local(self, event=None):
+        try:
+            # 生成默认文件名
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            default_filename = f"screenshot_{timestamp}.png"
+            
+            # 选择保存路径
+            file_path, _ = QFileDialog.getSaveFileName(
+                self, 
+                "保存截图", 
+                default_filename, 
+                "PNG Files (*.png);;JPEG Files (*.jpg);;All Files (*)"
+            )
+            
+            if file_path:
+                # 保存图片
+                self.pixmap.save(file_path)
+                QMessageBox.information(self, "成功", f"截图已保存到: {file_path}")
+        except Exception as e:
+            QMessageBox.warning(self, "错误", f"保存失败: {e}")
 
 
 class MonitorWidget(QWidget):
@@ -105,6 +253,22 @@ class MonitorWidget(QWidget):
         self.context_menu.addAction(reminder_config_action)
         self.context_menu.addSeparator()
         self.context_menu.addAction(quit_action)
+
+        # 初始化截图功能
+        self.screenshot_thread = ScreenshotThread()
+        self.screenshot_thread.screenshot_taken.connect(self.show_screenshot_result)
+        self.screenshot_thread.start()
+
+    def show_screenshot_result(self, pixmap):
+        """显示截图结果对话框"""
+        dialog = ScreenshotResultDialog(pixmap, self)
+        dialog.exec_()
+
+    def closeEvent(self, event):
+        """关闭事件处理"""
+        if hasattr(self, 'screenshot_thread'):
+            self.screenshot_thread.stop()
+        event.accept()
 
     def config_reminder(self):
         minutes, ok = QInputDialog.getInt(
